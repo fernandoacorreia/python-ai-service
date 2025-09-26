@@ -5,7 +5,7 @@ import os
 import uvicorn
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
@@ -18,7 +18,7 @@ app = FastAPI()
 class JSONFormatter(logging.Formatter):
     def format(self, record):
         log_entry = {
-            "timestamp": datetime.now(datetime.UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -78,6 +78,7 @@ def healthz(tracer_instance=Depends(get_tracer)):
     with tracer_instance.start_as_current_span("healthz") as span:
         span.set_attribute("endpoint", "healthz")
         logger.info("Health check requested")
+        span.set_status(trace.Status(trace.StatusCode.OK))
         return {"status": "OK"}
 
 
@@ -96,10 +97,12 @@ async def chat(
             response = await llm.ainvoke(request.message)
             span.set_attribute("response_length", len(response.content))
             logger.info("Chat response generated successfully")
+            span.set_status(trace.Status(trace.StatusCode.OK))
             return ChatResponse(response=response.content)
         except Exception as e:
             span.set_attribute("error", True)
             span.set_attribute("error_message", str(e))
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
             logger.exception(f"Chat request failed: {str(e)}")
             raise HTTPException(
                 status_code=500, detail=f"Error processing chat: {str(e)}"
