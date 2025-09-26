@@ -1,0 +1,23 @@
+[build-system]
+requires = ["uv-build"]
+build-backend = "uv_build"
+
+[project]
+name = "python-ai-service"
+version = "0.1.0"
+description = "Python AI Service"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi",
+    "langchain",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "--tb=short --import-mode=importlib"
