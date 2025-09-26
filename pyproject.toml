@@ -11,6 +11,9 @@ dependencies = [
     "fastapi",
     "langchain",
     "langchain-openai",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-instrumentation-fastapi",
     "pydantic",
     "uvicorn",
 ]
