@@ -20,9 +20,16 @@ uv sync --dev
 
 ### Running the Application
 ```bash
-# Run the main application
+# Run the FastAPI application
 uv run python -m python_ai_service.main
+
+# Or run with uvicorn directly
+uv run uvicorn python_ai_service.main:app --reload
 ```
+
+The application will be available at `http://localhost:8000`
+- Health check endpoint: `http://localhost:8000/healthz`
+- API documentation: `http://localhost:8000/docs`
 
 ### Code Formatting and Linting
 ```bash

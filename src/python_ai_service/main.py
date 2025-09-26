@@ -1,11 +1,14 @@
-def greetings(name: str = "World"):
-    return f"Hello, {name}!"
+from fastapi import FastAPI
+
+app = FastAPI()
 
 
-def main():
-    """Hello world main function."""
-    print(greetings())
+@app.get("/healthz")
+def healthz():
+    return {"status": "OK"}
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0")
