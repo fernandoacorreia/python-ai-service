@@ -4,7 +4,6 @@ Python FastAPI service for AI inference
 ## Development Setup
 
 ### Prerequisites
-- Python 3.14
 - [uv](https://github.com/astral-sh/uv) package manager
 
 ### Setup Development Environment
@@ -17,6 +16,21 @@ source .venv/bin/activate
 
 # Install dependencies and create virtual environment
 uv sync --dev
+```
+
+### Running the Application
+```bash
+# Run the main application
+uv run python -m python_ai_service.main
+```
+
+### Code Formatting and Linting
+```bash
+# Format code with black
+uv run --dev -m black .
+
+# Lint code with ruff
+uv run --dev -m ruff check --fix .
 ```
 
 ### Testing

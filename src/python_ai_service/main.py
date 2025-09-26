@@ -1,7 +1,11 @@
+def greetings(name: str = "World"):
+    return f"Hello, {name}!"
+
+
 def main():
     """Hello world main function."""
-    return "Hello, World!"
+    print(greetings())
 
 
 if __name__ == "__main__":
-    print(main())
+    main()
