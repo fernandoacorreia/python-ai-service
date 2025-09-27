@@ -3,11 +3,14 @@ from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain.prompts import ChatPromptTemplate
+from langchain.memory import ConversationBufferMemory
 import os
 import uvicorn
 import logging
 import json
+import uuid
 from datetime import datetime, timezone
+from typing import Dict, Optional
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
@@ -15,6 +18,13 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from python_ai_service.tools import AVAILABLE_TOOLS
 
 app = FastAPI()
+
+# Configuration constants
+MAX_CONVERSATION_AGE_HOURS = 24
+CLEANUP_INTERVAL_MINUTES = 60
+
+# In-memory storage for conversation memories
+conversations: Dict[str, ConversationBufferMemory] = {}
 
 
 # Setup JSON logging
@@ -49,10 +59,40 @@ logger.addHandler(handler)
 # Pydantic models
 class ChatRequest(BaseModel):
     message: str
+    conversation_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     response: str
+    conversation_id: str
+
+
+def get_conversation_memory(conversation_id: str) -> ConversationBufferMemory:
+    """Get or create conversation memory for the given conversation ID."""
+    if conversation_id not in conversations:
+        conversations[conversation_id] = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
+        logger.info(f"Created new conversation memory for ID: {conversation_id}")
+    return conversations[conversation_id]
+
+
+def cleanup_old_conversations():
+    """Clean up conversations older than MAX_CONVERSATION_AGE_HOURS."""
+    conversations_to_remove = []
+
+    for conversation_id in conversations.keys():
+        # For simplicity, we'll remove conversations after a certain number of interactions
+        # In a real implementation, you'd track timestamps
+        memory = conversations[conversation_id]
+        if hasattr(memory, "chat_memory") and len(memory.chat_memory.messages) > 100:
+            conversations_to_remove.append(conversation_id)
+
+    for conversation_id in conversations_to_remove:
+        del conversations[conversation_id]
+        logger.info(f"Cleaned up old conversation: {conversation_id}")
+
+    logger.info(f"Active conversations: {len(conversations)}")
 
 
 # Dependency injection
@@ -76,11 +116,12 @@ def get_llm() -> ChatOpenAI:
     return ChatOpenAI(model="gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def get_agent_executor() -> AgentExecutor:
-    """Create an agent executor with available tools."""
+def get_agent_executor_with_memory(conversation_id: str) -> AgentExecutor:
+    """Create an agent executor with conversation memory."""
     llm = get_llm()
+    memory = get_conversation_memory(conversation_id)
 
-    # Create a prompt template for the agent
+    # Create a prompt template for the agent with memory
     prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -101,9 +142,11 @@ def get_agent_executor() -> AgentExecutor:
         - If you cannot help with a request, politely explain what you can assist with
         - Keep responses brief and to the point while being helpful
         - Always collect the phone number from the customer before looking up their orders
+        - Remember previous interactions in this conversation to provide better service
         
         Remember: You must use the available tools to perform actions - do not make up or guess information about orders. Always ask for the customer's phone number when they want to check their orders.""",
             ),
+            ("placeholder", "{chat_history}"),
             ("human", "{input}"),
             ("placeholder", "{agent_scratchpad}"),
         ]
@@ -112,8 +155,10 @@ def get_agent_executor() -> AgentExecutor:
     # Create the agent
     agent = create_openai_tools_agent(llm, AVAILABLE_TOOLS, prompt)
 
-    # Create the agent executor
-    agent_executor = AgentExecutor(agent=agent, tools=AVAILABLE_TOOLS, verbose=True)
+    # Create the agent executor with memory
+    agent_executor = AgentExecutor(
+        agent=agent, tools=AVAILABLE_TOOLS, memory=memory, verbose=True
+    )
 
     return agent_executor
 
@@ -130,28 +175,44 @@ def healthz(tracer_instance=Depends(get_tracer)):
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    agent_executor: AgentExecutor = Depends(get_agent_executor),
     tracer_instance=Depends(get_tracer),
 ):
     with tracer_instance.start_as_current_span("chat") as span:
         span.set_attribute("endpoint", "chat")
         span.set_attribute("message_length", len(request.message))
-        logger.info(f"Chat request received: {request.message[:100]}...")
+
+        # Generate conversation_id if not provided
+        conversation_id = request.conversation_id or str(uuid.uuid4())
+        span.set_attribute("conversation_id", conversation_id)
+
+        logger.info(
+            f"Chat request received for conversation {conversation_id}: {request.message[:100]}..."
+        )
 
         try:
-            # Use the agent executor to process the request with tools
+            # Create agent executor with memory for this conversation
+            agent_executor = get_agent_executor_with_memory(conversation_id)
+
+            # Use the agent executor to process the request with conversation history
             response = await agent_executor.ainvoke({"input": request.message})
             response_content = response.get("output", "No response generated")
 
             span.set_attribute("response_length", len(response_content))
-            logger.info("Chat response generated successfully")
+            logger.info(
+                f"Chat response generated successfully for conversation {conversation_id}"
+            )
             span.set_status(trace.Status(trace.StatusCode.OK))
-            return ChatResponse(response=response_content)
+
+            return ChatResponse(
+                response=response_content, conversation_id=conversation_id
+            )
         except Exception as e:
             span.set_attribute("error", True)
             span.set_attribute("error_message", str(e))
             span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-            logger.exception(f"Chat request failed: {str(e)}")
+            logger.exception(
+                f"Chat request failed for conversation {conversation_id}: {str(e)}"
+            )
             raise HTTPException(
                 status_code=500, detail=f"Error processing chat: {str(e)}"
             ) from e
