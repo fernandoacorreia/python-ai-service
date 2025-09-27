@@ -124,7 +124,7 @@ def get_tracer():
 
 
 def get_llm() -> ChatOpenAI:
-    return ChatOpenAI(model="gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    return ChatOpenAI(model="gpt-5-mini", api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def get_langgraph_agent_with_memory(conversation_id: str):
