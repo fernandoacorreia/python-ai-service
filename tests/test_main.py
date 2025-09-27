@@ -60,6 +60,7 @@ def test_chat_success(mock_get_agent):
     mock_message = Mock()
     mock_message.content = "Hello! How can I help you today?"
     mock_message.hasattr = Mock(return_value=True)
+    mock_message.tool_calls = []  # Add empty tool_calls list
 
     mock_agent.stream.return_value = [{"messages": [mock_message]}]
     mock_get_agent.return_value = mock_agent
@@ -127,6 +128,7 @@ def test_chat_with_conversation_id(mock_get_agent):
     mock_message = Mock()
     mock_message.content = "I remember our previous conversation!"
     mock_message.hasattr = Mock(return_value=True)
+    mock_message.tool_calls = []  # Add empty tool_calls list
 
     mock_agent.stream.return_value = [{"messages": [mock_message]}]
     mock_get_agent.return_value = mock_agent

@@ -175,9 +175,17 @@ async def chat(
             # Create the configuration for this conversation thread
             config = {"configurable": {"thread_id": conversation_id}}
 
-            # Create the system message and input message
-            system_message = SystemMessage(
-                content="""You are a professional customer service representative for our e-commerce platform. 
+            # Create the input message
+            input_message = HumanMessage(content=request.message)
+
+            # Check if this is a new conversation
+            is_new_conversation = conversation_id not in conversations
+
+            # Only add system message for new conversations
+            messages_to_send = [input_message]
+            if is_new_conversation:
+                system_message = SystemMessage(
+                    content="""You are a professional customer service representative for our e-commerce platform. 
 Your role is to assist customers with their orders in a concise and professional manner.
 
 You have access to the following tools:
@@ -196,21 +204,59 @@ Guidelines for customer service:
 - Remember previous interactions in this conversation to provide better service
 
 Remember: You must use the available tools to perform actions - do not make up or guess information about orders. Always ask for the customer's phone number when they want to check their orders."""
+                )
+                messages_to_send = [system_message, input_message]
+                logger.info(
+                    f"New conversation {conversation_id}: Adding system message + user message"
+                )
+            else:
+                logger.info(
+                    f"Existing conversation {conversation_id}: Adding user message only (conversation history will be included by LangGraph)"
+                )
+
+            # Log the request being sent to the LLM
+            logger.info(
+                f"Sending request to LLM for conversation {conversation_id}: "
+                f"User message: {request.message[:100]}..."
             )
 
-            input_message = HumanMessage(content=request.message)
-
             # Process the request with LangGraph
+            # LangGraph will automatically include conversation history from the MemorySaver
             response_content = ""
             for event in app.stream(
-                {"messages": [system_message, input_message]},
+                {"messages": messages_to_send},
                 config,
                 stream_mode="values",
             ):
                 if "messages" in event and event["messages"]:
-                    last_message = event["messages"][-1]
+                    # Log the full conversation history being processed by LangGraph
+                    all_messages = event["messages"]
+                    logger.info(
+                        f"LangGraph processing {len(all_messages)} messages for conversation {conversation_id}"
+                    )
+
+                    # Log each message in the conversation history
+                    for i, msg in enumerate(all_messages):
+                        msg_type = getattr(msg, "type", "unknown")
+                        msg_content = getattr(msg, "content", "")
+                        logger.debug(
+                            f"Message {i+1} ({msg_type}): {msg_content[:200]}..."
+                        )
+
+                    last_message = all_messages[-1]
                     if hasattr(last_message, "content") and last_message.content:
                         response_content = last_message.content
+                        logger.info(
+                            f"Received LLM response for conversation {conversation_id}: "
+                            f"{response_content[:100]}..."
+                        )
+                    # Log tool calls if present
+                    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                        for tool_call in last_message.tool_calls:
+                            logger.info(
+                                f"Tool call made in conversation {conversation_id}: "
+                                f"{tool_call.get('name', 'unknown')} with args: {tool_call.get('args', {})}"
+                            )
 
             if not response_content:
                 response_content = "No response generated"
