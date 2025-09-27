@@ -10,7 +10,7 @@ import logging
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
@@ -23,8 +23,8 @@ app = FastAPI()
 MAX_CONVERSATION_AGE_HOURS = 24
 CLEANUP_INTERVAL_MINUTES = 60
 
-# In-memory storage for conversation memories
-conversations: Dict[str, ConversationBufferMemory] = {}
+# In-memory storage for conversation memories with timestamps
+conversations: Dict[str, Tuple[ConversationBufferMemory, datetime]] = {}
 
 
 # Setup JSON logging
@@ -70,23 +70,36 @@ class ChatResponse(BaseModel):
 def get_conversation_memory(conversation_id: str) -> ConversationBufferMemory:
     """Get or create conversation memory for the given conversation ID."""
     if conversation_id not in conversations:
-        conversations[conversation_id] = ConversationBufferMemory(
+        memory = ConversationBufferMemory(
             memory_key="chat_history", return_messages=True
         )
-        logger.info(f"Created new conversation memory for ID: {conversation_id}")
-    return conversations[conversation_id]
+        timestamp = datetime.now(timezone.utc)
+        conversations[conversation_id] = (memory, timestamp)
+        logger.info(
+            f"Created new conversation memory for ID: {conversation_id} at {timestamp.isoformat()}"
+        )
+    else:
+        memory, timestamp = conversations[conversation_id]
+        logger.debug(
+            f"Retrieved existing conversation memory for ID: {conversation_id} created at {timestamp.isoformat()}"
+        )
+    return memory
 
 
 def cleanup_old_conversations():
     """Clean up conversations older than MAX_CONVERSATION_AGE_HOURS."""
+    current_time = datetime.now(timezone.utc)
     conversations_to_remove = []
 
-    for conversation_id in conversations.keys():
-        # For simplicity, we'll remove conversations after a certain number of interactions
-        # In a real implementation, you'd track timestamps
-        memory = conversations[conversation_id]
-        if hasattr(memory, "chat_memory") and len(memory.chat_memory.messages) > 100:
+    for conversation_id, (memory, timestamp) in conversations.items():
+        # Calculate age in hours
+        age_hours = (current_time - timestamp).total_seconds() / 3600
+
+        if age_hours > MAX_CONVERSATION_AGE_HOURS:
             conversations_to_remove.append(conversation_id)
+            logger.info(
+                f"Marking conversation {conversation_id} for cleanup (age: {age_hours:.1f} hours)"
+            )
 
     for conversation_id in conversations_to_remove:
         del conversations[conversation_id]
