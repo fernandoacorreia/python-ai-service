@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 from datetime import datetime, timezone, timedelta
 from python_ai_service.main import (
     app,
@@ -50,16 +50,19 @@ def test_healthz_endpoint():
         app.dependency_overrides.clear()
 
 
-@patch("python_ai_service.main.get_agent_executor_with_memory")
-def test_chat_success(mock_get_agent_executor):
-    """Test successful chat request with mocked agent executor."""
-    # Create a mock agent executor response
-    mock_agent_response = {"output": "Hello! How can I help you today?"}
+@patch("python_ai_service.main.get_langgraph_agent_with_memory")
+def test_chat_success(mock_get_agent):
+    """Test successful chat request with mocked LangGraph agent."""
+    # Create a mock LangGraph agent that returns streaming events
+    mock_agent = Mock()
 
-    # Create a mock agent executor
-    mock_agent_executor = AsyncMock()
-    mock_agent_executor.ainvoke.return_value = mock_agent_response
-    mock_get_agent_executor.return_value = mock_agent_executor
+    # Mock the stream method to return events with messages
+    mock_message = Mock()
+    mock_message.content = "Hello! How can I help you today?"
+    mock_message.hasattr = Mock(return_value=True)
+
+    mock_agent.stream.return_value = [{"messages": [mock_message]}]
+    mock_get_agent.return_value = mock_agent
 
     # Create a mock tracer
     mock_tracer = Mock()
@@ -79,19 +82,19 @@ def test_chat_success(mock_get_agent_executor):
         response_data = response.json()
         assert response_data["response"] == "Hello! How can I help you today?"
         assert "conversation_id" in response_data
-        mock_agent_executor.ainvoke.assert_called_once_with({"input": "Hello!"})
+        mock_agent.stream.assert_called_once()
     finally:
         # Clean up the overrides
         app.dependency_overrides.clear()
 
 
-@patch("python_ai_service.main.get_agent_executor_with_memory")
-def test_chat_error(mock_get_agent_executor):
+@patch("python_ai_service.main.get_langgraph_agent_with_memory")
+def test_chat_error(mock_get_agent):
     """Test chat endpoint error handling."""
-    # Create a mock agent executor that raises an exception
-    mock_agent_executor = AsyncMock()
-    mock_agent_executor.ainvoke.side_effect = Exception("API Error")
-    mock_get_agent_executor.return_value = mock_agent_executor
+    # Create a mock LangGraph agent that raises an exception
+    mock_agent = Mock()
+    mock_agent.stream.side_effect = Exception("API Error")
+    mock_get_agent.return_value = mock_agent
 
     # Create a mock tracer
     mock_tracer = Mock()
@@ -114,16 +117,19 @@ def test_chat_error(mock_get_agent_executor):
         app.dependency_overrides.clear()
 
 
-@patch("python_ai_service.main.get_agent_executor_with_memory")
-def test_chat_with_conversation_id(mock_get_agent_executor):
+@patch("python_ai_service.main.get_langgraph_agent_with_memory")
+def test_chat_with_conversation_id(mock_get_agent):
     """Test chat request with provided conversation ID."""
-    # Create a mock agent executor response
-    mock_agent_response = {"output": "I remember our previous conversation!"}
+    # Create a mock LangGraph agent that returns streaming events
+    mock_agent = Mock()
 
-    # Create a mock agent executor
-    mock_agent_executor = AsyncMock()
-    mock_agent_executor.ainvoke.return_value = mock_agent_response
-    mock_get_agent_executor.return_value = mock_agent_executor
+    # Mock the stream method to return events with messages
+    mock_message = Mock()
+    mock_message.content = "I remember our previous conversation!"
+    mock_message.hasattr = Mock(return_value=True)
+
+    mock_agent.stream.return_value = [{"messages": [mock_message]}]
+    mock_get_agent.return_value = mock_agent
 
     # Create a mock tracer
     mock_tracer = Mock()
@@ -149,9 +155,7 @@ def test_chat_with_conversation_id(mock_get_agent_executor):
         response_data = response.json()
         assert response_data["response"] == "I remember our previous conversation!"
         assert response_data["conversation_id"] == "test-conversation-123"
-        mock_agent_executor.ainvoke.assert_called_once_with(
-            {"input": "Do you remember me?"}
-        )
+        mock_agent.stream.assert_called_once()
     finally:
         # Clean up the overrides
         app.dependency_overrides.clear()

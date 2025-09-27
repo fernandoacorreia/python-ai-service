@@ -1,9 +1,9 @@
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_tools_agent
-from langchain.prompts import ChatPromptTemplate
-from langchain.memory import ConversationBufferMemory
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
 import os
 import uvicorn
 import logging
@@ -24,7 +24,7 @@ MAX_CONVERSATION_AGE_HOURS = 24
 CLEANUP_INTERVAL_MINUTES = 60
 
 # In-memory storage for conversation memories with timestamps
-conversations: Dict[str, Tuple[ConversationBufferMemory, datetime]] = {}
+conversations: Dict[str, Tuple[MemorySaver, datetime]] = {}
 
 
 # Setup JSON logging
@@ -67,12 +67,10 @@ class ChatResponse(BaseModel):
     conversation_id: str
 
 
-def get_conversation_memory(conversation_id: str) -> ConversationBufferMemory:
+def get_conversation_memory(conversation_id: str) -> MemorySaver:
     """Get or create conversation memory for the given conversation ID."""
     if conversation_id not in conversations:
-        memory = ConversationBufferMemory(
-            memory_key="chat_history", return_messages=True
-        )
+        memory = MemorySaver()
         timestamp = datetime.now(timezone.utc)
         conversations[conversation_id] = (memory, timestamp)
         logger.info(
@@ -129,51 +127,19 @@ def get_llm() -> ChatOpenAI:
     return ChatOpenAI(model="gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def get_agent_executor_with_memory(conversation_id: str) -> AgentExecutor:
-    """Create an agent executor with conversation memory."""
+def get_langgraph_agent_with_memory(conversation_id: str):
+    """Create a LangGraph agent with conversation memory."""
     llm = get_llm()
     memory = get_conversation_memory(conversation_id)
 
-    # Create a prompt template for the agent with memory
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                """You are a professional customer service representative for our e-commerce platform. 
-        Your role is to assist customers with their orders in a concise and professional manner.
-        
-        You have access to the following tools:
-        - query_orders: Query orders for a customer by their phone number
-        - cancel_order: Cancel an order by its order ID
-        
-        Guidelines for customer service:
-        - Always be polite, professional, and concise in your responses
-        - Use the available tools to perform actions when customers request them
-        - When a customer asks about their orders, you MUST ask for their phone number first before using the query_orders tool
-        - When a customer wants to cancel an order, use the cancel_order tool with the order ID
-        - Provide clear information about order statuses and any actions taken
-        - If you cannot help with a request, politely explain what you can assist with
-        - Keep responses brief and to the point while being helpful
-        - Always collect the phone number from the customer before looking up their orders
-        - Remember previous interactions in this conversation to provide better service
-        
-        Remember: You must use the available tools to perform actions - do not make up or guess information about orders. Always ask for the customer's phone number when they want to check their orders.""",
-            ),
-            ("placeholder", "{chat_history}"),
-            ("human", "{input}"),
-            ("placeholder", "{agent_scratchpad}"),
-        ]
+    # Create the LangGraph agent with memory
+    app = create_react_agent(
+        llm,
+        tools=AVAILABLE_TOOLS,
+        checkpointer=memory,
     )
 
-    # Create the agent
-    agent = create_openai_tools_agent(llm, AVAILABLE_TOOLS, prompt)
-
-    # Create the agent executor with memory
-    agent_executor = AgentExecutor(
-        agent=agent, tools=AVAILABLE_TOOLS, memory=memory, verbose=True
-    )
-
-    return agent_executor
+    return app
 
 
 @app.get("/healthz")
@@ -203,12 +169,51 @@ async def chat(
         )
 
         try:
-            # Create agent executor with memory for this conversation
-            agent_executor = get_agent_executor_with_memory(conversation_id)
+            # Create LangGraph agent with memory for this conversation
+            app = get_langgraph_agent_with_memory(conversation_id)
 
-            # Use the agent executor to process the request with conversation history
-            response = await agent_executor.ainvoke({"input": request.message})
-            response_content = response.get("output", "No response generated")
+            # Create the configuration for this conversation thread
+            config = {"configurable": {"thread_id": conversation_id}}
+
+            # Create the system message and input message
+            system_message = SystemMessage(
+                content="""You are a professional customer service representative for our e-commerce platform. 
+Your role is to assist customers with their orders in a concise and professional manner.
+
+You have access to the following tools:
+- query_orders: Query orders for a customer by their phone number
+- cancel_order: Cancel an order by its order ID
+
+Guidelines for customer service:
+- Always be polite, professional, and concise in your responses
+- Use the available tools to perform actions when customers request them
+- When a customer asks about their orders, you MUST ask for their phone number first before using the query_orders tool
+- When a customer wants to cancel an order, use the cancel_order tool with the order ID
+- Provide clear information about order statuses and any actions taken
+- If you cannot help with a request, politely explain what you can assist with
+- Keep responses brief and to the point while being helpful
+- Always collect the phone number from the customer before looking up their orders
+- Remember previous interactions in this conversation to provide better service
+
+Remember: You must use the available tools to perform actions - do not make up or guess information about orders. Always ask for the customer's phone number when they want to check their orders."""
+            )
+
+            input_message = HumanMessage(content=request.message)
+
+            # Process the request with LangGraph
+            response_content = ""
+            for event in app.stream(
+                {"messages": [system_message, input_message]},
+                config,
+                stream_mode="values",
+            ):
+                if "messages" in event and event["messages"]:
+                    last_message = event["messages"][-1]
+                    if hasattr(last_message, "content") and last_message.content:
+                        response_content = last_message.content
+
+            if not response_content:
+                response_content = "No response generated"
 
             span.set_attribute("response_length", len(response_content))
             logger.info(
